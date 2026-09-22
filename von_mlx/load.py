@@ -162,7 +162,7 @@ def _resolve_weights(name: str, model_dir: str) -> str:
     direct = os.path.join(model_dir, name)
     if os.path.exists(direct):
         return direct
-    for variant in ("4bit", "fp16"):
+    for variant in ("4bit", "8bit", "fp16", "fp32"):
         cand = os.path.join(model_dir, variant, name)
         if os.path.exists(cand):
             return cand

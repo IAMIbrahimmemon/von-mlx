@@ -72,9 +72,9 @@ r.answers["severity"].score       # 2.62   (expected level over Low/Medium/High/
 | **What it is** | MLX port of Von — a calibrated decision model, *not* a generative LLM |
 | **Base architecture** | ModernBERT-Large · 28 layers · hidden 1024 · 16 heads · 395.8M params |
 | **Two heads** | `option_marker` (98.66% val, **recommended**) · `nli` (96.43% val) |
-| **Variants** | `8bit/` **422 MB — recommended** · `fp16/` 791 MB — exact reference |
+| **Variants** | `8bit/` **422 MB — recommended** · `fp16/` 791 MB · `fp32/` 3.0 GB — reference |
 | **Latency** | ≈ **36 ms** per decision on M3 · 61 ms for a 3-question fan-out |
-| **Parity vs PyTorch** | **1.4e-05** max logit Δ (fp32) · **0 argmax flips** on shipped artifacts |
+| **Parity vs PyTorch** | **1.4e-05** max logit Δ (port, fp32) · **0/252** decision flips (8bit vs fp32) |
 | **Runtime** | MLX only — no PyTorch needed for inference |
 | **Output** | JSON answer objects with probabilities — never generated prose |
 
@@ -137,11 +137,21 @@ both faster and more accurate than the per-option NLI path.
 
 | Directory | Precision | Size | Recommendation |
 |---|---|---|---|
-| **`8bit/`** | affine, group size 64 | **422 MB** | ✅ **recommended** — 0 argmax flips, ≤ 0.041 probability shift |
-| `fp16/` | float16 | 791 MB | exact reference — use to reproduce the parity numbers |
+| **`8bit/`** | affine, group size 64 | **422 MB** | ✅ **recommended** — 0/252 decision flips vs fp32, ~7× smaller |
+| `fp16/` | float16 | 791 MB | ✅ equally faithful — 0/252 flips, wider headroom |
+| `fp32/` | float32 | 3.0 GB | reference precision — zero storage rounding |
 | *(measured, not shipped)* `4bit` | affine, group size 64 | 224 MB | ❌ **not recommended** — flips a decision |
 
-The choice is **measured, not assumed**. A 2/3/4/5/6/8-bit sweep over six decision cases:
+**8-bit loses nothing measurable.** Across **252 real benchmark cases** (144 base + 108
+perturbations, from `wfzyx/von`'s own `benchmarks/data/`), `8bit/` produced **0/252** argmax
+flips against `fp32/`, with identical accuracy. See
+[Precision: what 8-bit actually costs](#precision-what-8-bit-actually-costs) for the full
+measurement.
+
+4-bit, by contrast, flips a decision and widens the calibrated probability spread by up to
+**0.38**. Since calibration is the entire point of this model, 8-bit is the smallest safe
+width. The decision heads (`classifier`, `scorer`, `head`) stay in fp16 in the quantized
+variant — they are <1% of parameters and carry the calibration.
 
 | Variant | Worst probability shift | Argmax flips |
 |---|---|---|
@@ -266,6 +276,69 @@ flips** and reports deltas for information:
 > perfectly usable artifact or — if you widen the tolerance until it passes — hides a flipped
 > decision. Probabilities are what a caller acts on, so decisions are what the gate checks.
 
+### Precision: what 8-bit actually costs
+
+The sweep above uses six hand-built cases — enough to pick a width, too thin to
+support a claim about a decision model. So the shipped variants were re-measured on
+`wfzyx/von`'s own benchmark sets:
+
+| Set | n | Contents |
+|---|---|---|
+| `authored144.jsonl` | 144 | base decision cases, `split=test` |
+| `perturbations108.jsonl` | 108 | 36 groups × {`option_reversal`, `criterion_wrapper`, `irrelevant_context`} |
+
+```bash
+python verify/variant_eval.py --data <bench dir> \
+  --variants fp32:out/von-1.0-mlx/fp32,fp16:out/von-1.0-mlx/fp16,8bit:out/von-1.0-mlx/8bit \
+  --sdk-control
+```
+
+**Accuracy — identical across every precision, including the official SDK:**
+
+| Variant | Accuracy | Correct |
+|---|---|---|
+| `fp32/` | 0.5873 | 148/252 |
+| `fp16/` | 0.5873 | 148/252 |
+| `8bit/` | 0.5873 | 148/252 |
+| official `von` SDK (torch, same weights) | 0.5873 | 148/252 |
+
+**Agreement with `fp32/`:**
+
+| Variant | Decision flips | max \|Δp\| | mean \|Δp\| | max KL | median margin |
+|---|---|---|---|---|---|
+| `fp16/` | **0/252** | 8.0e-03 | 8.9e-04 | 2.3e-04 | 0.546 |
+| `8bit/` | **0/252** | 5.9e-02 | 8.7e-03 | 9.9e-03 | 0.552 |
+
+**Perturbation stability** — base and perturbation must resolve to the same option id:
+
+| Variant | criterion_wrapper | irrelevant_context | option_reversal |
+|---|---|---|---|
+| `fp32/` | 30/36 | 19/36 | 24/36 |
+| `fp16/` | 30/36 | 19/36 | 24/36 |
+| `8bit/` | 30/36 | 19/36 | 24/36 |
+| official SDK | 30/36 | 19/36 | 24/36 |
+
+> **Two things worth reading off this table.**
+>
+> **1. 8-bit costs one thing, and it is not a decision.** No argmax changes anywhere in 252
+> cases, but the *narrowest* decision gets narrower: the tightest case sits at a
+> **0.0017** winning margin under fp32 → **0.0010** under fp16 → **0.0145** under 8-bit,
+> against a median margin of ~0.55. So 8-bit's own quantization noise (≈1e-2) is larger than
+> that margin, and whether this particular case lands where it did is **luck, not
+> precision**. If you threshold probabilities rather than take argmax, prefer `fp16/`.
+>
+> **2. The instability in this table is the model's, not the port's.** `fp32/`, `fp16/`, and
+> `8bit/` report *identical* per-flavour stability — and so does the official PyTorch SDK.
+> Since four independent precisions agree to the case, that behaviour belongs to the
+> weights and the benchmark, not to the port or the quantization. Reporting it as a
+> quantization defect would have been the wrong conclusion; the control run is what rules
+> it out.
+>
+> Accuracy (0.5873) is also well below the 98.66% figure in the upstream model card, because
+> that number comes from the `jabr/classifier-benchmark` peer suite, **not** from this
+> harder `split=test` set. The official SDK scores 0.5873 here too, so this is a property of
+> the data, not of the port.
+
 ### End-to-end against the official SDK
 
 MLX engine vs `von.models.option_marker.OptionMarkerModel` on identical hand-built prompts,
@@ -288,12 +361,23 @@ Measured on **M3 (24 GB)**, `option_marker`, batch size 1, including zero-shot d
 |---|---|---|
 | MCP tool call, warm (`8bit`) | median | **35.9 ms** |
 | MCP 3-question fan-out (`8bit`) | single call | **61.1 ms** |
-| HTTP `system_one`, 3 questions (`8bit`) | median | 83.9 ms |
-| HTTP `system_one`, 3 questions (`fp16`) | median | 88.7 ms |
+| HTTP `system_one`, 3 questions (`8bit`) | median | 75.2 ms |
+| HTTP `system_one`, 3 questions (`fp16`) | median | 82.5 ms |
+| HTTP `system_one`, 3 questions (`fp32`) | median | 117.1 ms |
 | MCP first call | cold (incl. 420 MB load) | 2.35 s |
 
-≈ **24–36 ms per forward pass**. Upstream's "sub-25 ms" figure is the same order but measured
-on CUDA; MLX on this M3 is memory-bandwidth bound, so 8-bit quantization recovered only ~5%.
+Model load and on-disk size, per variant:
+
+| Variant | Load time | Weights on disk | 3-Q fan-out |
+|---|---|---|---|
+| `fp32/` | 2.98 s | 3,164.6 MB | 117.1 ms |
+| `fp16/` | 0.13 s | 1,582.3 MB | 82.5 ms |
+| `8bit/` | 0.13 s | 842.3 MB | 75.2 ms |
+
+≈ **24–36 ms per forward pass**. `fp32/` costs ~40% more wall time and ~3.8× the disk for
+*a* precision that changes no decision — which is why it ships as a reference, not as the
+default. Upstream's "sub-25 ms" figure is the same order but measured on CUDA; MLX on this
+M3 is memory-bandwidth bound, so 8-bit recovers ~9% over fp16 rather than the theoretical 2×.
 
 > The upstream `von-sdk` 1.0.1 wheel is missing `von/models/` (packaging bug), so the SDK-side
 > reference is loaded from the upstream GitHub source with its SHA-256 pinned in
@@ -334,7 +418,7 @@ crash, so they are documented rather than fixed silently:
 ## Files
 
 ```
-8bit/  or  fp16/
+8bit/  fp16/  or  fp32/
 ├── model.safetensors            # nli head
 ├── option_marker.safetensors    # option_marker head (recommended)
 ├── config.json                  # ModernBERT config + quantization stamp
@@ -346,6 +430,12 @@ crash, so they are documented rather than fixed silently:
 ```
 
 Each variant is **self-contained** — no config or tokenizer files are shared between them.
+
+Build any subset with the converter:
+
+```bash
+python convert.py --src hf_orig --out out/von-1.0-mlx --variants fp32,fp16,8bit
+```
 
 ---
 

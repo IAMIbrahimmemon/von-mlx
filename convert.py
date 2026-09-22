@@ -68,17 +68,22 @@ def flat_arrays(tree: Any, prefix: str = "") -> Dict[str, mx.array]:
     return out
 
 
-def load_source_weights(src: str, head: str) -> Dict[str, mx.array]:
-    """Read the original PyTorch checkpoints into fp16 MLX arrays."""
+def _target_dtype(bits: int | None, dtype: str) -> Any:
+    """fp16 for quantized variants (MLX quantizes from fp16), else the requested dtype."""
+    if bits:
+        return mx.float16
+    return {"float32": mx.float32, "fp32": mx.float32}.get(dtype, mx.float16)
+
+
+def load_source_weights(src: str, head: str, dtype: Any = mx.float16) -> Dict[str, mx.array]:
+    """Read the original PyTorch checkpoints into MLX arrays of ``dtype``."""
     if head == "nli":
         from safetensors import safe_open
 
         weights: Dict[str, mx.array] = {}
         with safe_open(os.path.join(src, NLI_WEIGHTS), "pt") as fh:
             for key in fh.keys():
-                weights[key] = mx.array(fh.get_tensor(key).float().numpy()).astype(
-                    mx.float16
-                )
+                weights[key] = mx.array(fh.get_tensor(key).float().numpy()).astype(dtype)
         return weights
 
     legacy = os.path.join(src, MARKER_WEIGHTS_LEGACY)
@@ -88,7 +93,7 @@ def load_source_weights(src: str, head: str) -> Dict[str, mx.array]:
 
     raw = torch.load(legacy, map_location="cpu", weights_only=True)
     weights = {
-        k: mx.array(v.detach().cpu().float().numpy()).astype(mx.float16)
+        k: mx.array(v.detach().cpu().float().numpy()).astype(dtype)
         for k, v in raw.items()
     }
     del raw
@@ -96,8 +101,8 @@ def load_source_weights(src: str, head: str) -> Dict[str, mx.array]:
 
 
 def convert_head(cls, src: str, out_dir: str, config: ModelArgs, head: str,
-                 bits: int | None) -> Dict[str, Any]:
-    weights = load_source_weights(src, head)
+                 bits: int | None, dtype: Any = mx.float16) -> Dict[str, Any]:
+    weights = load_source_weights(src, head, dtype)
 
     model = cls(config)
     expected = set(_linearize(model.parameters()))
@@ -165,6 +170,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default="hf_orig")
     ap.add_argument("--out", default="out/von-1.0-mlx")
+    ap.add_argument(
+        "--variants",
+        default="fp16,8bit",
+        help="comma-separated subset of fp32,fp16,8bit (default: fp16,8bit)",
+    )
     args = ap.parse_args()
 
     config = ModelArgs.from_json(os.path.join(args.src, "config.json"))
@@ -173,16 +183,30 @@ def main():
     # 8 bits is the smallest width that kept every decision intact in
     # verify/bits_sweep.py; 5- and 4-bit both flipped an argmax and widened the
     # calibrated probability spread by up to 0.38. See README "Verification".
-    for variant, bits in (("fp16", None), ("8bit", 8)):
+    # fp32 is the reference-precision variant: the original checkpoints are
+    # float32, so this is the only variant with zero storage rounding.
+    spec = {
+        "fp32": (None, "float32"),
+        "fp16": (None, "float16"),
+        "8bit": (8, "float16"),
+    }
+    requested = [v.strip() for v in args.variants.split(",") if v.strip()]
+    unknown = [v for v in requested if v not in spec]
+    if unknown:
+        raise SystemExit(f"unknown variant(s) {unknown}; expected from {list(spec)}")
+
+    for variant in requested:
+        bits, dtype_name = spec[variant]
+        dtype = _target_dtype(bits, dtype_name)
         out_dir = os.path.join(args.out, variant)
         os.makedirs(out_dir, exist_ok=True)
         copy_shared(args.src, out_dir, bits)
         print(f"[{variant}] converting...")
-        nli = convert_head(VonNLI, args.src, out_dir, config, "nli", bits)
+        nli = convert_head(VonNLI, args.src, out_dir, config, "nli", bits, dtype)
         print(f"  nli           {nli['bytes']/1e6:>9.2f} MB  "
               f"({nli['quantized_linears']} quantized linears)")
         marker = convert_head(
-            VonOptionMarker, args.src, out_dir, config, "option_marker", bits
+            VonOptionMarker, args.src, out_dir, config, "option_marker", bits, dtype
         )
         print(f"  option_marker {marker['bytes']/1e6:>9.2f} MB  "
               f"({marker['quantized_linears']} quantized linears)")
@@ -213,7 +237,12 @@ def main():
             "bits": 8,
             "fp16_paths": ["classifier", "scorer", "head"],
             "measured": {
-                "8bit": {"argmax_flips": "0/6", "worst_prob_shift": 0.041},
+                "method": "verify/variant_eval.py on 252 benchmark cases "
+                          "(authored144 + perturbations108), vs the fp32 variant",
+                "8bit": {"argmax_flips": "0/252", "max_prob_shift": 0.0591,
+                         "accuracy_delta": 0.0},
+                "fp16": {"argmax_flips": "0/252", "max_prob_shift": 0.0080,
+                         "accuracy_delta": 0.0},
                 "4bit": {"argmax_flips": "1/6", "worst_prob_shift": 0.382,
                          "verdict": "not recommended - loses a decision"},
             },
