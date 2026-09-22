@@ -295,12 +295,17 @@ python verify/variant_eval.py --data <bench dir> \
 
 **Accuracy — identical across every precision, including the official SDK:**
 
-| Variant | Accuracy | Correct |
-|---|---|---|
-| `fp32/` | 0.5873 | 148/252 |
-| `fp16/` | 0.5873 | 148/252 |
-| `8bit/` | 0.5873 | 148/252 |
-| official `von` SDK (torch, same weights) | 0.5873 | 148/252 |
+| Variant | All 252 | Base (n=144) | Perturbations (n=108) |
+|---|---|---|---|
+| `fp32/` | 0.5873 | 0.6389 | 0.5185 |
+| `fp16/` | 0.5873 | 0.6389 | 0.5185 |
+| `8bit/` | 0.5873 | 0.6389 | 0.5185 |
+| official `von` SDK (torch, same weights) | 0.5873 | 0.6389 | 0.5185 |
+
+Note the base/perturbation split: accuracy drops from **0.6389** on clean cases to **0.5185**
+under perturbation — the model is materially more fragile to option reordering, criterion
+rewording and added context than its headline number suggests. Every precision shows the
+identical split, so that fragility is the model's, not the port's.
 
 **Agreement with `fp32/`:**
 
