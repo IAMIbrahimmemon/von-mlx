@@ -1,0 +1,14 @@
+#!/bin/zsh
+# Launch the Von (MLX) MCP server for an MCP host (Hermes, Claude Desktop, ...).
+#
+# PYTHONPATH is deliberately unset: an agent session exports its own PYTHONPATH,
+# and inheriting it puts a foreign Python's site-packages ahead of this venv's,
+# which surfaces as confusing numpy/mlx failures inside the server.
+#
+# VON_MLX_MODEL selects the weight directory; default is the 8-bit variant.
+
+export PYTHONPATH=""
+export VON_MLX_MODEL="${VON_MLX_MODEL:-$HOME/vendor-mlx/von-mlx/out/von-1.0-mlx/8bit}"
+
+exec "$HOME/vendor-mlx/von-mlx/.venv/bin/python" \
+  -m von_mlx.mcp_server --model-dir "$VON_MLX_MODEL" "$@"

@@ -1,0 +1,19 @@
+# local artifacts — never commit weights
+out/
+hf_orig/
+hfcache/
+*.safetensors
+*.pt
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# os
+.DS_Store
