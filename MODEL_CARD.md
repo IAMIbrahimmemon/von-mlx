@@ -175,7 +175,7 @@ from von_mlx import VonEngine
 engine = VonEngine("von-1.0-mlx/8bit")     # or fp16/
 ```
 
-The port code lives at **[github.com/IAMIbrahim/von-mlx](https://github.com/IAMIbrahim/von-mlx)** —
+The port code lives at **[github.com/IAMIbrahimmemon/von-mlx](https://github.com/IAMIbrahimmemon/von-mlx)** —
 install it from a checkout, or add the checkout root to `PYTHONPATH`.
 
 > **Always run with `PYTHONPATH` unset** (`env -u PYTHONPATH .venv/bin/python …`). Agent
@@ -185,6 +185,10 @@ install it from a checkout, or add the checkout root to `PYTHONPATH`.
 ### As an MCP server (recommended for agents)
 
 The cleanest way to put Von behind an agent — Hermes, Claude Desktop, any MCP host:
+
+```bash
+uv pip install --python .venv/bin/python "mcp>=2"    # mcp 1.x used a different API
+```
 
 ```json
 {

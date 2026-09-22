@@ -20,7 +20,7 @@ dependencies = [
 # torch is used only by the converter and the verification scripts
 convert = ["torch>=2.0", "safetensors"]
 serve = ["uvicorn>=0.28", "httpx"]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=2"]
 
 [project.scripts]
 von-mlx = "von_mlx.cli:main"

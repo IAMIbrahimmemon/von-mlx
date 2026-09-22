@@ -18,12 +18,15 @@ Run:
 
 Notes for maintainers
 ---------------------
-* Built on ``mcp.server.mcpserver.MCPServer`` (the current API). The older
-  lowlevel ``Server.list_tools()``/``call_tool()`` decorators were **removed in
-  mcp 2.x** -- registering them raises ``AttributeError`` at startup, after
-  which the process dies and every client sees "Connection closed" during
-  ``initialize`` with no useful message. If you hit that, check the server's
-  stderr before suspecting the client.
+* Built on ``mcp.server.mcpserver.MCPServer`` (the current API, **mcp >= 2**).
+  The class was named ``FastMCP`` in mcp 1.x, and the lowlevel
+  ``Server.list_tools()``/``call_tool()`` decorators were **removed in 2.x** --
+  registering them raises ``AttributeError`` at startup, after which the process
+  dies and every client sees only "Connection closed" during ``initialize`` with
+  no useful message. If you hit that, check the server's stderr before blaming
+  the client. Migration guide:
+  https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver
+  (or pin ``mcp<2`` and adapt the imports back to ``mcp.server.fastmcp``).
 * All MLX work goes through :class:`~von_mlx.worker.InferenceWorker`, because MLX
   streams are thread-local: running a forward pass on an arbitrary thread fails
   with ``RuntimeError: There is no Stream(cpu, 0) in current thread``.
